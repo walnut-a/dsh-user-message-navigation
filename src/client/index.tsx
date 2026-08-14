@@ -6,11 +6,14 @@ import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 import {
-  isMarkerActivationKey, markerIndexAtY, previewText, type UserMessageMarker,
+  arrivalFeedbackKeyframes, easeOutQuart, isMarkerActivationKey, markerIndexAtY, previewText,
+  scrollTopForMarker, shouldSmoothMarkerDistance, type UserMessageMarker,
 } from './runtime.ts'
 
 const MINIMUM_MESSAGES = 4
 const RAIL_WIDTH = 36
+const NEARBY_SCROLL_DURATION_MS = 240
+const ARRIVAL_FEEDBACK_DURATION_MS = 1_100
 
 interface RailGeometry {
   readonly left: number
@@ -37,12 +40,16 @@ function readMarkers(flow: HTMLElement): readonly UserMessageMarker[] {
     })
 }
 
-function railGeometry(flow: HTMLElement, scroller: HTMLElement): RailGeometry | null {
+function feedbackSurfaceFor(marker: UserMessageMarker): HTMLElement {
+  return marker.element.querySelector<HTMLElement>('[class*="_bubble"]') ?? marker.element
+}
+
+function railGeometry(flow: HTMLElement, scroller: HTMLElement, markerCount: number): RailGeometry | null {
   const flowRect = flow.getBoundingClientRect()
   const scrollerRect = scroller.getBoundingClientRect()
   const available = flowRect.left - scrollerRect.left
   if (available < 28 || scrollerRect.height < 160) return null
-  const height = Math.min(scrollerRect.height * 0.7, 640)
+  const height = Math.min(scrollerRect.height - 48, Math.max(72, markerCount * 18))
   return {
     left: Math.round(Math.max(scrollerRect.left, flowRect.left - RAIL_WIDTH - 8)),
     top: Math.round(scrollerRect.top + (scrollerRect.height - height) / 2),
@@ -70,6 +77,9 @@ function NavigationRail(_props: NavigationRailProps) {
   const dragStartY = useRef(0)
   const lastDragged = useRef<number | null>(null)
   const suppressClick = useRef(false)
+  const scrollFrame = useRef(0)
+  const feedbackTimer = useRef(0)
+  const feedbackAnimation = useRef<Animation | null>(null)
 
   const refresh = useCallback(() => {
     const flow = document.querySelector<HTMLElement>('[data-chat-flow]')
@@ -82,7 +92,7 @@ function NavigationRail(_props: NavigationRailProps) {
     if (scroller === null) return
     const next = readMarkers(flow)
     setMarkers(next)
-    setGeometry(railGeometry(flow, scroller))
+    setGeometry(railGeometry(flow, scroller, next.length))
     setActive(activeMarker(next, scroller))
   }, [])
 
@@ -105,20 +115,57 @@ function NavigationRail(_props: NavigationRailProps) {
     }
   }, [refresh])
 
-  const jumpTo = useCallback((index: number, smooth: boolean) => {
+  useEffect(() => () => {
+    cancelAnimationFrame(scrollFrame.current)
+    window.clearTimeout(feedbackTimer.current)
+    feedbackAnimation.current?.cancel()
+  }, [])
+
+  const jumpTo = useCallback((index: number, smooth: boolean, feedback = true) => {
     const marker = markers[index]
     if (marker === undefined) return
+    const scroller = scrollerFor(marker.element)
+    if (scroller === null) return
     const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
-    marker.element.scrollIntoView({
-      behavior: smooth && !reduceMotion ? 'smooth' : 'instant',
-      block: 'center',
-    })
-    if (!reduceMotion) {
-      marker.element.animate([
-        { backgroundColor: 'transparent' },
-        { backgroundColor: 'color-mix(in srgb, currentColor 8%, transparent)' },
-        { backgroundColor: 'transparent' },
-      ], { duration: 700, easing: 'ease-out' })
+    const markerRect = marker.element.getBoundingClientRect()
+    const scrollerRect = scroller.getBoundingClientRect()
+    const targetTop = scrollTopForMarker(scroller.scrollTop, markerRect.top, scrollerRect.top, 16)
+    cancelAnimationFrame(scrollFrame.current)
+    window.clearTimeout(feedbackTimer.current)
+    feedbackAnimation.current?.cancel()
+    const startTop = scroller.scrollTop
+    const animatedScroll = smooth && !reduceMotion && Math.abs(targetTop - startTop) >= 1
+    if (!animatedScroll) {
+      scroller.scrollTop = targetTop
+    } else {
+      const startedAt = performance.now()
+      const distance = targetTop - startTop
+      const step = (timestamp: number) => {
+        const progress = Math.min(1, (timestamp - startedAt) / NEARBY_SCROLL_DURATION_MS)
+        scroller.scrollTop = startTop + distance * easeOutQuart(progress)
+        if (progress < 1) scrollFrame.current = requestAnimationFrame(step)
+        else scrollFrame.current = 0
+      }
+      scrollFrame.current = requestAnimationFrame(step)
+    }
+    if (feedback && !reduceMotion) {
+      const showFeedback = () => {
+        const surface = feedbackSurfaceFor(marker)
+        const style = getComputedStyle(surface)
+        const highlightColor = getComputedStyle(document.body)
+          .getPropertyValue('--dsw-specific-bubble-highlight').trim()
+        feedbackAnimation.current = surface.animate(
+          arrivalFeedbackKeyframes(style.backgroundColor, highlightColor || style.backgroundColor),
+          {
+            duration: ARRIVAL_FEEDBACK_DURATION_MS,
+            easing: 'linear',
+          },
+        )
+      }
+      feedbackTimer.current = window.setTimeout(
+        showFeedback,
+        animatedScroll ? NEARBY_SCROLL_DURATION_MS : 0,
+      )
     }
     setActive(index)
   }, [markers])
@@ -132,7 +179,7 @@ function NavigationRail(_props: NavigationRailProps) {
     if (lastDragged.current === index) return
     lastDragged.current = index
     setHovered(index)
-    jumpTo(index, false)
+    jumpTo(index, false, false)
   }, [jumpTo, markers.length])
 
   if (markers.length < MINIMUM_MESSAGES || geometry === null) return null
@@ -149,6 +196,7 @@ function NavigationRail(_props: NavigationRailProps) {
       data-user-message-navigation=""
       style={style}
       onPointerDown={(event) => {
+        if (event.button !== 0) return
         pressed.current = true
         dragging.current = false
         dragStartY.current = event.clientY
@@ -157,13 +205,15 @@ function NavigationRail(_props: NavigationRailProps) {
       }}
       onPointerMove={dragIndex}
       onPointerUp={(event) => {
-        suppressClick.current = dragging.current
+        if (!pressed.current) return
+        suppressClick.current = true
         pressed.current = false
         dragging.current = false
         lastDragged.current = null
         event.currentTarget.releasePointerCapture(event.pointerId)
       }}
       onPointerCancel={() => {
+        suppressClick.current = false
         pressed.current = false
         dragging.current = false
         lastDragged.current = null
@@ -178,6 +228,11 @@ function NavigationRail(_props: NavigationRailProps) {
           title={`用户消息 ${index + 1}：${marker.label}`}
           data-active={active === index || undefined}
           data-hovered={hovered === index || undefined}
+          onPointerDown={(event) => {
+            if (event.button !== 0) return
+            suppressClick.current = true
+            jumpTo(index, shouldSmoothMarkerDistance(active, index))
+          }}
           onPointerEnter={() => { setHovered(index) }}
           onPointerLeave={() => { setHovered(current => current === index ? null : current) }}
           onFocus={() => { setHovered(index) }}
@@ -185,14 +240,14 @@ function NavigationRail(_props: NavigationRailProps) {
           onKeyDown={(event) => {
             if (!isMarkerActivationKey(event.key)) return
             event.preventDefault()
-            jumpTo(index, true)
+            jumpTo(index, shouldSmoothMarkerDistance(active, index))
           }}
           onClick={() => {
             if (suppressClick.current) {
               suppressClick.current = false
               return
             }
-            jumpTo(index, true)
+            jumpTo(index, shouldSmoothMarkerDistance(active, index))
           }}
         >
           <span aria-hidden="true" />
@@ -219,10 +274,10 @@ export function apply(ctx: ClientContext): void {
         top: var(--dsh-user-nav-top);
         width: 36px;
         height: var(--dsh-user-nav-height);
-        display: flex;
-        flex-direction: column;
-        justify-content: space-evenly;
-        align-items: center;
+        display: grid;
+        grid-auto-rows: 18px;
+        align-content: center;
+        justify-items: center;
         pointer-events: auto;
         touch-action: none;
       }
@@ -230,14 +285,15 @@ export function apply(ctx: ClientContext): void {
         appearance: none;
         border: 0;
         background: transparent;
-        width: 36px;
-        min-height: 10px;
-        flex: 1 1 10px;
+        width: 28px;
+        height: 18px;
+        min-height: 18px;
         display: grid;
         place-items: center;
         padding: 0;
-        color: color-mix(in srgb, currentColor 24%, transparent);
+        color: var(--dsw-alias-scrollbar-bg-l1);
         cursor: pointer;
+        transition: color 120ms ease-out;
       }
       [data-user-message-navigation] button > span {
         display: block;
@@ -245,16 +301,16 @@ export function apply(ctx: ClientContext): void {
         height: 3px;
         border-radius: 999px;
         background: currentColor;
-        transition: width 120ms ease, color 120ms ease;
+        transition: transform 120ms ease-out;
       }
       [data-user-message-navigation] button[data-active],
       [data-user-message-navigation] button[data-hovered],
       [data-user-message-navigation] button:focus-visible {
-        color: color-mix(in srgb, currentColor 72%, transparent);
+        color: var(--dsw-alias-label-secondary);
       }
       [data-user-message-navigation] button[data-hovered] > span,
       [data-user-message-navigation] button:focus-visible > span {
-        width: 16px;
+        transform: scaleX(1.45);
       }
       [data-user-message-navigation] button:focus-visible {
         outline: 1px solid currentColor;
@@ -262,6 +318,7 @@ export function apply(ctx: ClientContext): void {
         border-radius: 4px;
       }
       @media (prefers-reduced-motion: reduce) {
+        [data-user-message-navigation] button,
         [data-user-message-navigation] button > span { transition: none; }
       }
     `
