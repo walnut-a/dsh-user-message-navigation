@@ -1,7 +1,7 @@
 {
   "name": "dsh-user-message-navigation",
-  "version": "0.1.0",
-  "description": "A user-message navigation rail for long DeepSeek Harness conversations",
+  "version": "0.1.1",
+  "description": "User Message Minimap: a navigation rail for long DeepSeek Harness conversations",
   "type": "module",
   "main": "./lib/index.js",
   "types": "./lib/types/index.d.ts",
@@ -51,7 +51,9 @@
     "deepseek-harness",
     "dsh-plugin",
     "conversation",
-    "navigation"
+    "navigation",
+    "minimap",
+    "chat-navigation"
   ],
   "license": "MIT",
   "repository": {
