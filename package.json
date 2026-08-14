@@ -58,6 +58,10 @@
     "type": "git",
     "url": "git+https://github.com/walnut-a/dsh-user-message-navigation.git"
   },
+  "homepage": "https://github.com/walnut-a/dsh-user-message-navigation#readme",
+  "bugs": {
+    "url": "https://github.com/walnut-a/dsh-user-message-navigation/issues"
+  },
   "publishConfig": {
     "access": "public"
   },
