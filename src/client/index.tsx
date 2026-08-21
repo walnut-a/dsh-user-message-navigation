@@ -12,8 +12,21 @@ import {
 
 const MINIMUM_MESSAGES = 4
 const RAIL_WIDTH = 36
+const RAIL_TOP_INSET = 8
+const RAIL_BOTTOM_INSET = 16
+const RAIL_MIN_HEIGHT = 40
+// Adaptive density: ROW_MAX is the looser spacing for a few messages, ROW_MIN
+// the dense floor as the count grows, MAX_EXTENT the strip's designed height.
+const RAIL_ROW_MAX = 24
+const RAIL_ROW_MIN = 8
+const RAIL_MAX_EXTENT = 320
 const NEARBY_SCROLL_DURATION_MS = 240
 const ARRIVAL_FEEDBACK_DURATION_MS = 1_100
+// Left inset of the first view tab from the scrollport's left edge
+// (ConversationRoot `.header` padding-left 20px + `.tabs` padding-left 8px).
+const TAB_LEFT_INSET = 28
+// Visible tick width, matching the injected `button > span { width: 11px }`.
+const TICK_WIDTH = 11
 
 interface RailGeometry {
   readonly left: number
@@ -49,10 +62,27 @@ function railGeometry(flow: HTMLElement, scroller: HTMLElement, markerCount: num
   const scrollerRect = scroller.getBoundingClientRect()
   const available = flowRect.left - scrollerRect.left
   if (available < 28 || scrollerRect.height < 160) return null
-  const height = Math.min(scrollerRect.height - 48, Math.max(72, markerCount * 18))
+  // Adaptive density: the per-tick row height loosens toward RAIL_ROW_MAX for a
+  // few messages and tightens toward RAIL_ROW_MIN as the count grows, so the
+  // strip reads as gradually filling up. The height grows with the count (up to
+  // the scrollport) and the strip stays vertically centered.
+  const maxExtent = scrollerRect.height - RAIL_TOP_INSET - RAIL_BOTTOM_INSET
+  const row = Math.max(RAIL_ROW_MIN, Math.min(RAIL_ROW_MAX, RAIL_MAX_EXTENT / markerCount))
+  const height = Math.max(RAIL_MIN_HEIGHT, Math.min(maxExtent, markerCount * row))
+  const top = scrollerRect.top + (scrollerRect.height - height) / 2
+  // Optical alignment: the visible tick column is centered inside the wider
+  // nav (RAIL_WIDTH), so align the tick's left edge — not the nav box — to the
+  // first view tab, and never overlap the chat column.
+  const opticalLeftOffset = (RAIL_WIDTH - TICK_WIDTH) / 2
+  const tabLeft = scrollerRect.left + TAB_LEFT_INSET
+  const contentBoundary = flowRect.left - RAIL_WIDTH - 8
+  const left = Math.round(Math.max(
+    scrollerRect.left,
+    Math.min(tabLeft - opticalLeftOffset, contentBoundary),
+  ))
   return {
-    left: Math.round(Math.max(scrollerRect.left, flowRect.left - RAIL_WIDTH - 8)),
-    top: Math.round(scrollerRect.top + (scrollerRect.height - height) / 2),
+    left,
+    top: Math.round(top),
     height: Math.round(height),
   }
 }
@@ -69,6 +99,7 @@ function activeMarker(markers: readonly UserMessageMarker[], scroller: HTMLEleme
 
 function NavigationRail(_props: NavigationRailProps) {
   const [markers, setMarkers] = useState<readonly UserMessageMarker[]>([])
+  const [tickTops, setTickTops] = useState<readonly number[]>([])
   const [active, setActive] = useState(0)
   const [geometry, setGeometry] = useState<RailGeometry | null>(null)
   const [hovered, setHovered] = useState<number | null>(null)
@@ -85,14 +116,28 @@ function NavigationRail(_props: NavigationRailProps) {
     const flow = document.querySelector<HTMLElement>('[data-chat-flow]')
     if (flow === null) {
       setMarkers([])
+      setTickTops([])
       setGeometry(null)
       return
     }
     const scroller = scrollerFor(flow)
     if (scroller === null) return
     const next = readMarkers(flow)
+    const extent = railGeometry(flow, scroller, next.length)
+    if (extent === null) {
+      setMarkers([])
+      setTickTops([])
+      setGeometry(null)
+      return
+    }
+    // Even distribution across the dense rail: each tick owns an equal slice,
+    // so the rail fills uniformly and densifies once it caps at the scrollport.
+    const tops = next.length === 0
+      ? []
+      : next.map((_, index) => Math.round((index + 0.5) * extent.height / next.length))
     setMarkers(next)
-    setGeometry(railGeometry(flow, scroller, next.length))
+    setTickTops(tops)
+    setGeometry(extent)
     setActive(activeMarker(next, scroller))
   }, [])
 
@@ -223,6 +268,7 @@ function NavigationRail(_props: NavigationRailProps) {
         <button
           key={marker.key}
           type="button"
+          style={{ top: `${tickTops[index] ?? 0}px` }}
           aria-label={`跳转到第 ${index + 1} 条用户消息`}
           aria-current={active === index ? 'true' : undefined}
           title={`用户消息 ${index + 1}：${marker.label}`}
@@ -274,10 +320,6 @@ export function apply(ctx: ClientContext): void {
         top: var(--dsh-user-nav-top);
         width: 36px;
         height: var(--dsh-user-nav-height);
-        display: grid;
-        grid-auto-rows: 18px;
-        align-content: center;
-        justify-items: center;
         pointer-events: auto;
         touch-action: none;
       }
@@ -285,15 +327,20 @@ export function apply(ctx: ClientContext): void {
         appearance: none;
         border: 0;
         background: transparent;
-        width: 28px;
+        position: absolute;
+        left: 0;
+        right: 0;
         height: 18px;
-        min-height: 18px;
         display: grid;
         place-items: center;
         padding: 0;
         color: var(--dsw-alias-scrollbar-bg-l1);
         cursor: pointer;
-        transition: color 120ms ease-out;
+        transition:
+          top 200ms cubic-bezier(0.4, 0, 0.2, 1),
+          color 120ms ease-out,
+          opacity 200ms ease-out,
+          transform 200ms ease-out;
       }
       [data-user-message-navigation] button > span {
         display: block;
@@ -302,6 +349,12 @@ export function apply(ctx: ClientContext): void {
         border-radius: 999px;
         background: currentColor;
         transition: transform 120ms ease-out;
+      }
+      @starting-style {
+        [data-user-message-navigation] button {
+          opacity: 0;
+          transform: scale(0.6);
+        }
       }
       [data-user-message-navigation] button[data-active],
       [data-user-message-navigation] button[data-hovered],
@@ -320,6 +373,9 @@ export function apply(ctx: ClientContext): void {
       @media (prefers-reduced-motion: reduce) {
         [data-user-message-navigation] button,
         [data-user-message-navigation] button > span { transition: none; }
+        @starting-style {
+          [data-user-message-navigation] button { opacity: 1; transform: none; }
+        }
       }
     `
     document.head.appendChild(style)

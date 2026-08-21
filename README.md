@@ -4,7 +4,7 @@
 
 > English: A removable Web client plugin that adds a compact user-message minimap to long DeepSeek Harness conversations.
 
-当前版本为 `0.1.2`，面向 DeepSeek Harness `0.1.1-rc.2`。插件使用公开的 `shell.overlay` 插槽，但在 DSH 提供专用的对话导航接口前，仍需通过现有 Chat DOM 属性发现用户消息位置。
+当前版本为 `0.1.9`，面向 DeepSeek Harness `0.1.1-rc.2`。插件使用公开的 `shell.overlay` 插槽，但在 DSH 提供专用的对话导航接口前，仍需通过现有 Chat DOM 属性发现用户消息位置。
 
 ## 名称
 
@@ -64,7 +64,7 @@ dsh web
 ```sh
 pnpm run pack:check
 pnpm pack
-dsh plugin --profile web add ./dsh-user-message-navigation-0.1.2.tgz
+dsh plugin --profile web add ./dsh-user-message-navigation-0.1.9.tgz
 ```
 
 ## 兼容性边界

@@ -1,6 +1,6 @@
 {
   "name": "dsh-user-message-navigation",
-  "version": "0.1.2",
+  "version": "0.1.9",
   "description": "User Message Minimap: a navigation rail for long DeepSeek Harness conversations",
   "type": "module",
   "main": "./lib/index.js",
